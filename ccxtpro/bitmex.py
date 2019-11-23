@@ -5,39 +5,34 @@
 
 import ccxt.async_support as ccxt
 from ccxt.base.errors import ExchangeError
-from ccxt.base.errors import BadRequest
-from ccxt.base.errors import BadSymbol
+from ccxt.base.errors import RateLimitExceeded
 
 
-class kraken(ccxt.kraken):
+class bitmex(ccxt.bitmex):
 
     def describe(self):
-        return self.deep_extend(super(kraken, self).describe(), {
+        return self.deep_extend(super(bitmex, self).describe(), {
             'has': {
                 'ws': True,
                 'fetchWsTicker': True,
                 'fetchWsOrderBook': True,
             },
             'urls': {
-                'api': {
-                    'ws': 'wss://ws.kraken.com',
-                    'wsauth': 'wss://ws-auth.kraken.com',
-                    'betaws': 'wss://beta-ws.kraken.com',
-                },
+                'ws': 'wss://www.bitmex.com/realtime',
             },
             'versions': {
                 'ws': '0.2.0',
             },
             'options': {
                 'subscriptionStatusByChannelId': {},
+                'fetchWsOrderBookLevel': 'orderBookL2',  # 'orderBookL2' = L2 full order book, 'orderBookL2_25' = L2 top 25, 'orderBook10' L3 top 10
             },
             'exceptions': {
                 'ws': {
                     'exact': {
-                        'Event(s) not found': BadRequest,
                     },
                     'broad': {
-                        'Currency pair not in ISO 4217-A3 format': BadSymbol,
+                        'Rate limit exceeded': RateLimitExceeded,
                     },
                 },
             },
@@ -192,40 +187,27 @@ class kraken(ccxt.kraken):
         messageHash = wsName + ':' + name
         self.resolveWsFuture(client, messageHash, result)
 
-    async def fetch_ws_public_message(self, name, symbol, params={}):
+    async def fetch_ws_order_book(self, symbol, limit=None, params={}):
+        name = None
+        if limit is None:
+            name = self.safe_string(self.options, 'fetchWsOrderBookLevel', 'orderBookL2')
+        elif limit == 25:
+            name = 'orderBookL2_25'
+        elif limit == 10:
+            name = 'orderBookL10'
+        else:
+            raise ExchangeError(self.id + ' fetchWsOrderBook limit argument must be None(L2), 25(L2) or 10(L3)')
         await self.load_markets()
         market = self.market(symbol)
-        wsName = self.safe_value(market['info'], 'wsname')
-        messageHash = wsName + ':' + name
-        url = self.urls['api']['ws']
-        requestId = self.nonce()
-        subscribe = {
-            'event': 'subscribe',
-            'reqid': requestId,
-            'pair': [
-                wsName,
+        messageHash = name + ':' + market['id']
+        url = self.urls['ws']
+        request = {
+            'op': 'subscribe',
+            'args': [
+                messageHash,
             ],
-            'subscription': {
-                'name': name,
-            },
         }
-        future = self.sendWsMessage(url, messageHash, self.deep_extend(subscribe, params), messageHash)
-        client = self.clients[url]
-        client['futures'][requestId] = future
-        return future
-
-    async def fetch_ws_ticker(self, symbol, params={}):
-        return await self.fetch_ws_public_message('ticker', symbol, params)
-
-    async def fetch_ws_trades(self, symbol, params={}):
-        return await self.fetch_ws_public_message('trade', symbol, params)
-
-    async def fetch_ws_order_book(self, symbol, limit=None, params={}):
-        name = 'book'
-        request = {}
-        if limit is not None:
-            request['subscription'] = {'depth': limit}  # default 10, valid options 10, 25, 100, 500, 1000
-        return await self.fetch_ws_public_message(name, symbol, self.extend(request, params))
+        return self.sendWsMessage(url, messageHash, self.deep_extend(request, params), messageHash)
 
     async def fetch_ws_ohlcv(self, symbol, timeframe='1m', since=None, limit=None, params={}):
         name = 'ohlc'
@@ -234,10 +216,10 @@ class kraken(ccxt.kraken):
                 'interval': int(self.timeframes[timeframe]),
             },
         }
-        return await self.fetch_ws_public_message(name, symbol, self.extend(request, params))
+        return await self.fetchWsPublicMessage(name, symbol, self.extend(request, params))
 
     async def load_markets(self, reload=False, params={}):
-        markets = await super(kraken, self).load_markets(reload, params)
+        markets = await super(bitmex, self).load_markets(reload, params)
         marketsByWsName = self.safe_value(self.options, 'marketsByWsName')
         if (marketsByWsName is None) or reload:
             marketsByWsName = {}
@@ -260,15 +242,6 @@ class kraken(ccxt.kraken):
     def sign_ws_message(self, client, messageHash, message, params={}):
         # todo: not implemented yet
         return message
-
-    def handle_ws_heartbeat(self, client, message):
-        #
-        # every second(approx) if no other updates are sent
-        #
-        #     {"event": "heartbeat"}
-        #
-        event = self.safe_string(message, 'event')
-        self.resolveWsFuture(client, event, message)
 
     def parse_ws_trade(self, client, trade, market=None):
         #
@@ -311,86 +284,97 @@ class kraken(ccxt.kraken):
         #
         # first message(snapshot)
         #
-        #     [
-        #         1234,  # channelID
-        #         {
-        #             "as": [
-        #                 ["5541.30000", "2.50700000", "1534614248.123678"],
-        #                 ["5541.80000", "0.33000000", "1534614098.345543"],
-        #                 ["5542.70000", "0.64700000", "1534614244.654432"]
-        #             ],
-        #             "bs": [
-        #                 ["5541.20000", "1.52900000", "1534614248.765567"],
-        #                 ["5539.90000", "0.30000000", "1534614241.769870"],
-        #                 ["5539.50000", "5.00000000", "1534613831.243486"]
-        #             ]
+        #     {
+        #         table: 'orderBookL2',
+        #         action: 'partial',
+        #         keys: ['symbol', 'id', 'side'],
+        #         types: {
+        #             symbol: 'symbol',
+        #             id: 'long',
+        #             side: 'symbol',
+        #             size: 'long',
+        #             price: 'float'
         #         },
-        #         "book-10",
-        #         "XBT/USD"
-        #     ]
+        #         foreignKeys: {symbol: 'instrument', side: 'side'},
+        #         attributes: {symbol: 'parted', id: 'sorted'},
+        #         filter: {symbol: 'XBTUSD'},
+        #         data: [
+        #             {symbol: 'XBTUSD', id: 8700000100, side: 'Sell', size: 1, price: 999999},
+        #             {symbol: 'XBTUSD', id: 8700000200, side: 'Sell', size: 3, price: 999998},
+        #             {symbol: 'XBTUSD', id: 8716991250, side: 'Sell', size: 26, price: 830087.5},
+        #             {symbol: 'XBTUSD', id: 8728701950, side: 'Sell', size: 1720, price: 712980.5},
+        #         ]
+        #     }
         #
         # subsequent updates
         #
-        #     [
-        #         1234,
-        #         { # optional
-        #             "a": [
-        #                 ["5541.30000", "2.50700000", "1534614248.456738"],
-        #                 ["5542.50000", "0.40100000", "1534614248.456738"]
-        #             ]
-        #         },
-        #         { # optional
-        #             "b": [
-        #                 ["5541.30000", "0.00000000", "1534614335.345903"]
-        #             ]
-        #         },
-        #         "book-10",
-        #         "XBT/USD"
-        #     ]
+        #     {
+        #         table: 'orderBookL2',
+        #         action: 'update',
+        #         data: [
+        #             {symbol: 'XBTUSD', id: 8799285100, side: 'Sell', size: 70590},
+        #             {symbol: 'XBTUSD', id: 8799285550, side: 'Sell', size: 217652},
+        #             {symbol: 'XBTUSD', id: 8799288950, side: 'Buy', size: 47552},
+        #             {symbol: 'XBTUSD', id: 8799289250, side: 'Buy', size: 78217},
+        #         ]
+        #     }
         #
-        messageLength = len(message)
-        wsName = message[messageLength - 1]
-        market = self.safe_value(self.options['marketsByWsName'], wsName)
-        symbol = market['symbol']
-        timestamp = None
-        messageHash = wsName + ':book'
-        # if self is a snapshot
-        if 'as' in message[1]:
-            # todo get depth from marketsByWsName
-            self.orderbooks[symbol] = self.limitedOrderBook({}, 10)
-            orderbook = self.orderbooks[symbol]
-            sides = {
-                'as': 'asks',
-                'bs': 'bids',
-            }
-            keys = list(sides.keys())
-            for i in range(0, len(keys)):
-                key = keys[i]
-                side = sides[key]
-                bookside = orderbook[side]
-                deltas = self.safe_value(message[1], key, [])
-                timestamp = self.handle_ws_deltas(deltas, bookside, timestamp)
-            orderbook['timestamp'] = timestamp
-            self.resolveWsFuture(client, messageHash, orderbook.limit())
+        action = self.safe_string(message, 'action')
+        table = self.safe_string(message, 'table')
+        data = self.safe_value(message, 'data', [])
+        # if it's an initial snapshot
+        if action == 'partial':
+            filter = self.safe_value(message, 'filter', {})
+            marketId = self.safe_value(filter, 'symbol')
+            if marketId in self.markets_by_id:
+                market = self.markets_by_id[marketId]
+                symbol = market['symbol']
+                if table == 'orderBookL2':
+                    self.orderbooks[symbol] = self.indexedOrderBook()
+                elif table == 'orderBookL2_25':
+                    self.orderbooks[symbol] = self.limitedIndexedOrderBook({}, 25)
+                elif table == 'orderBook10':
+                    self.orderbooks[symbol] = self.limitedIndexedOrderBook({}, 10)
+                orderbook = self.orderbooks[symbol]
+                for i in range(0, len(data)):
+                    price = self.safe_float(data[i], 'price')
+                    size = self.safe_float(data[i], 'size')
+                    id = self.safe_string(data[i], 'id')
+                    side = self.safe_string(data[i], 'side')
+                    side = 'bids' if (side == 'Buy') else 'asks'
+                    bookside = orderbook[side]
+                    bookside.store(price, size, id)
+                messageHash = table + ':' + marketId
+                self.resolveWsFuture(client, messageHash, orderbook.limit())
         else:
-            orderbook = self.orderbooks[symbol]
-            # else, if self is an orderbook update
-            a = None
-            b = None
-            if messageLength == 5:
-                a = self.safe_value(message[1], 'a', [])
-                b = self.safe_value(message[2], 'b', [])
-            else:
-                if 'a' in message[1]:
-                    a = self.safe_value(message[1], 'a', [])
-                else:
-                    b = self.safe_value(message[1], 'b', [])
-            if a is not None:
-                timestamp = self.handle_ws_deltas(a, orderbook['asks'], timestamp)
-            if b is not None:
-                timestamp = self.handle_ws_deltas(b, orderbook['bids'], timestamp)
-            orderbook['timestamp'] = timestamp
-            self.resolveWsFuture(client, messageHash, orderbook.limit())
+            numUpdatesByMarketId = {}
+            for i in range(0, len(data)):
+                marketId = self.safe_value(data[i], 'symbol')
+                if marketId in self.markets_by_id:
+                    if not (marketId in list(numUpdatesByMarketId.keys())):
+                        numUpdatesByMarketId[marketId] = 0
+                    numUpdatesByMarketId[marketId] += 1
+                    market = self.markets_by_id[marketId]
+                    symbol = market['symbol']
+                    orderbook = self.orderbooks[symbol]
+                    price = self.safe_float(data[i], 'price')
+                    size = self.safe_float(data[i], 'size', 0)
+                    id = self.safe_string(data[i], 'id')
+                    side = self.safe_string(data[i], 'side')
+                    side = 'bids' if (side == 'Buy') else 'asks'
+                    bookside = orderbook[side]
+                    if action == 'insert':
+                        bookside.store(price, size, id)
+                    else:
+                        bookside.restore(price, size, id)
+            marketIds = list(numUpdatesByMarketId.keys())
+            for i in range(0, len(marketIds)):
+                marketId = marketIds[i]
+                messageHash = table + ':' + marketId
+                market = self.markets_by_id[marketId]
+                symbol = market['symbol']
+                orderbook = self.orderbooks[symbol]
+                self.resolveWsFuture(client, messageHash, orderbook.limit())
 
     def handle_ws_deltas(self, deltas, bookside, timestamp):
         for j in range(0, len(deltas)):
@@ -408,10 +392,11 @@ class kraken(ccxt.kraken):
         # involves system status and maintenance updates
         #
         #     {
-        #         connectionID: 15527282728335292000,
-        #         event: 'systemStatus',
-        #         status: 'online',  # online|maintenance|(custom status tbd)
-        #         version: '0.2.0'
+        #         info: 'Welcome to the BitMEX Realtime API.',
+        #         version: '2019-11-22T00:24:37.000Z',
+        #         timestamp: '2019-11-23T09:02:27.771Z',
+        #         docs: 'https://www.bitmex.com/app/wsAPI',
+        #         limit: {remaining: 39}
         #     }
         #
         return message
@@ -423,78 +408,104 @@ class kraken(ccxt.kraken):
         # involves an identified request/response sequence
         #
         #     {
-        #         channelID: 210,
-        #         channelName: 'book-10',
-        #         event: 'subscriptionStatus',
-        #         reqid: 1574146735269,
-        #         pair: 'ETH/XBT',
-        #         status: 'subscribed',
-        #         subscription: {depth: 10, name: 'book'}
+        #         success: True,
+        #         subscribe: 'orderBookL2:XBTUSD',
+        #         request: {op: 'subscribe', args: ['orderBookL2:XBTUSD']}
         #     }
         #
-        channelId = self.safe_string(message, 'channelID')
-        self.options['subscriptionStatusByChannelId'][channelId] = message
-        requestId = self.safe_string(message, 'reqid')
-        if client.futures[requestId]:
-            # todo: transpile del in ccxt
-            del client.futures[requestId]
+        # --------------------------------------------------------------------
+        #
+        # channelId = self.safe_string(message, 'channelID')
+        # self.options['subscriptionStatusByChannelId'][channelId] = message
+        # requestId = self.safe_string(message, 'reqid')
+        # if client.futures[requestId]:
+        #     # todo: transpile del in ccxt
+        #     del client.futures[requestId]
+        # }
+        #
+        return message
 
     def handle_ws_errors(self, client, message):
         #
+        # generic error format
+        #
+        #     {"error": errorMessage}
+        #
+        # examples
+        #
         #     {
-        #         errorMessage: 'Currency pair not in ISO 4217-A3 format foobar',
-        #         event: 'subscriptionStatus',
-        #         pair: 'foobar',
-        #         reqid: 1574146735269,
-        #         status: 'error',
-        #         subscription: {name: 'ticker'}
+        #         "status": 429,
+        #         "error": "Rate limit exceeded, retry in 1 seconds.",
+        #         "meta": {"retryAfter": 1},
+        #         "request": {"op": "subscribe", "args": "orderBook"},
         #     }
         #
-        errorMessage = self.safe_value(message, 'errorMessage')
-        if errorMessage is not None:
-            requestId = self.safe_value(message, 'reqid')
-            if requestId is not None:
+        #     {"error": "Rate limit exceeded, retry in 29 seconds."}
+        #
+        error = self.safe_value(message, 'error')
+        if error is not None:
+            request = self.safe_value(message, 'request', {})
+            args = self.safe_string(request, 'args', [])
+            numArgs = len(args)
+            if numArgs > 0:
+                messageHash = args[0]
                 broad = self.exceptions['ws']['broad']
-                broadKey = self.findBroadlyMatchedKey(broad, errorMessage)
+                broadKey = self.findBroadlyMatchedKey(broad, error)
                 exception = None
                 if broadKey is None:
-                    exception = ExchangeError(errorMessage)
+                    exception = ExchangeError(error)
                 else:
-                    exception = broad[broadKey](errorMessage)
+                    exception = broad[broadKey](error)
                 # print(requestId, exception)
-                self.rejectWsFuture(client, requestId, exception)
-                # raise exception
+                self.rejectWsFuture(client, messageHash, exception)
                 return False
         return True
 
     def handle_ws_message(self, client, message):
-        if isinstance(message, list):
-            channelId = str(message[0])
-            subscriptionStatus = self.safe_value(self.options['subscriptionStatusByChannelId'], channelId)
-            if subscriptionStatus is not None:
-                subscription = self.safe_value(subscriptionStatus, 'subscription', {})
-                name = self.safe_string(subscription, 'name')
-                methods = {
-                    'book': 'handleWsOrderBook',
-                    'ohlc': 'handleWsOHLCV',
-                    'ticker': 'handleWsTicker',
-                    'trade': 'handleWsTrades',
-                }
-                method = self.safe_string(methods, name)
-                if method is None:
-                    return message
-                else:
-                    return getattr(self, method)(client, message)
-        else:
-            if self.handle_ws_errors(client, message):
-                event = self.safe_string(message, 'event')
-                methods = {
-                    'heartbeat': 'handleWsHeartbeat',
-                    'systemStatus': 'handleWsSystemStatus',
-                    'subscriptionStatus': 'handleWsSubscriptionStatus',
-                }
-                method = self.safe_string(methods, event)
-                if method is None:
-                    return message
-                else:
-                    return getattr(self, method)(client, message)
+        #
+        #     {
+        #         info: 'Welcome to the BitMEX Realtime API.',
+        #         version: '2019-11-22T00:24:37.000Z',
+        #         timestamp: '2019-11-23T09:04:42.569Z',
+        #         docs: 'https://www.bitmex.com/app/wsAPI',
+        #         limit: {remaining: 38}
+        #     }
+        #
+        #     {
+        #         success: True,
+        #         subscribe: 'orderBookL2:XBTUSD',
+        #         request: {op: 'subscribe', args: ['orderBookL2:XBTUSD']}
+        #     }
+        #
+        #     {
+        #         table: 'orderBookL2',
+        #         action: 'update',
+        #         data: [
+        #             {symbol: 'XBTUSD', id: 8799284800, side: 'Sell', size: 721000},
+        #             {symbol: 'XBTUSD', id: 8799285100, side: 'Sell', size: 70590},
+        #             {symbol: 'XBTUSD', id: 8799285550, side: 'Sell', size: 217652},
+        #             {symbol: 'XBTUSD', id: 8799285850, side: 'Sell', size: 105578},
+        #             {symbol: 'XBTUSD', id: 8799286350, side: 'Sell', size: 172093},
+        #             {symbol: 'XBTUSD', id: 8799286650, side: 'Sell', size: 201125},
+        #             {symbol: 'XBTUSD', id: 8799288950, side: 'Buy', size: 47552},
+        #             {symbol: 'XBTUSD', id: 8799289250, side: 'Buy', size: 78217},
+        #             {symbol: 'XBTUSD', id: 8799289700, side: 'Buy', size: 193677},
+        #             {symbol: 'XBTUSD', id: 8799290000, side: 'Buy', size: 818161},
+        #             {symbol: 'XBTUSD', id: 8799290500, side: 'Buy', size: 218806},
+        #             {symbol: 'XBTUSD', id: 8799290800, side: 'Buy', size: 102946}
+        #         ]
+        #     }
+        #
+        if self.handle_ws_errors(client, message):
+            table = self.safe_string(message, 'table')
+            methods = {
+                'orderBookL2': 'handleWsOrderBook',
+                'orderBookL2_25': 'handleWsOrderBook',
+                'orderBook10': 'handleWsOrderBook',
+            }
+            method = self.safe_string(methods, table)
+            if method is None:
+                print(message)
+                return message
+            else:
+                return getattr(self, method)(client, message)
