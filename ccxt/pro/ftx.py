@@ -292,7 +292,7 @@ class ftx(Exchange, ftxRest):
     def format_number(self, n):
         if n >= 1e-4:
             if n % 1 == 0:
-                return '{:.1f}'.format(n)
+                return format(n, '.1f')
             return str(n)
         else:
             return self.format_scientific_notation_ftx(n)

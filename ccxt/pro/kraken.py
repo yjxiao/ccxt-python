@@ -434,7 +434,7 @@ class kraken(Exchange, krakenRest):
         parts = string.split('.')
         integer = self.safe_string(parts, 0)
         decimals = self.safe_string(parts, 1, '')
-        paddedDecimals = decimals.padEnd(length, '0')
+        paddedDecimals = decimals.ljust(length, '0')
         joined = integer + paddedDecimals
         i = 0
         while(joined[i] == '0'):
