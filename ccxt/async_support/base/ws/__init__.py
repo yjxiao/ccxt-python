@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 
 from ccxt.base import errors
-from ccxt.pro.base import exchange
 
 # -----------------------------------------------------------------------------
 
@@ -36,4 +35,4 @@ from ccxt import OrderImmediatelyFillable   # noqa: F401
 from ccxt import OrderNotFillable           # noqa: F401
 
 
-__all__ = exchange.__all__ + decimal_to_precision.__all__ + errors.__all__  # noqa: F405
+__all__ = decimal_to_precision.__all__ + errors.__all__  # noqa: F405
