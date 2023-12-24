@@ -12,23 +12,24 @@ sys.path.append(root)
 # ----------------------------------------------------------------------------
 # -*- coding: utf-8 -*-
 
-from ccxt.test.base import test_order_book  # noqa E402
+from ccxt.test.base import test_trade  # noqa E402
 from ccxt.test.base import test_shared_methods  # noqa E402
 
-async def test_watch_order_book(exchange, skipped_properties, symbol):
-    method = 'watchOrderBook'
+async def test_watch_my_trades(exchange, skipped_properties, symbol):
+    method = 'watchMyTrades'
     now = exchange.milliseconds()
     ends = now + 15000
     while now < ends:
         response = None
         try:
-            response = await exchange.watch_order_book(symbol)
+            response = await exchange.watch_my_trades(symbol)
         except Exception as e:
             if not test_shared_methods.is_temporary_failure(e):
                 raise e
             now = exchange.milliseconds()
             continue
-        # [ response, skippedProperties ] = fixPhpObjectArray (exchange, response, skippedProperties);
-        assert isinstance(response, dict), exchange.id + ' ' + method + ' ' + symbol + ' must return an object. ' + exchange.json(response)
+        assert isinstance(response, list), exchange.id + ' ' + method + ' ' + symbol + ' must return an array. ' + exchange.json(response)
         now = exchange.milliseconds()
-        test_order_book(exchange, skipped_properties, method, response, symbol)
+        for i in range(0, len(response)):
+            test_trade(exchange, skipped_properties, method, response[i], symbol, now)
+        test_shared_methods.assert_timestamp_order(exchange, method, symbol, response)
