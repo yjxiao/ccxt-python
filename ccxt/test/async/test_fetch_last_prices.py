@@ -12,21 +12,20 @@ sys.path.append(root)
 # ----------------------------------------------------------------------------
 # -*- coding: utf-8 -*-
 
-from ccxt.test.base import test_ticker  # noqa E402
+from ccxt.test.base import test_last_price  # noqa E402
 
-def test_fetch_tickers(exchange, skipped_properties, symbol):
-    method = 'fetchTickers'
+async def test_fetch_last_prices(exchange, skipped_properties, symbol):
+    method = 'fetchLastprices'
     # log ('fetching all tickers at once...')
-    tickers = None
+    response = None
     checked_symbol = None
     try:
-        tickers = exchange.fetch_tickers()
+        response = await exchange.fetch_last_prices()
     except Exception as e:
-        tickers = exchange.fetch_tickers([symbol])
+        response = await exchange.fetch_last_prices([symbol])
         checked_symbol = symbol
-    assert isinstance(tickers, dict), exchange.id + ' ' + method + ' ' + checked_symbol + ' must return an object. ' + exchange.json(tickers)
-    values = list(tickers.values())
+    assert isinstance(response, dict), exchange.id + ' ' + method + ' ' + checked_symbol + ' must return an object. ' + exchange.json(response)
+    values = list(response.values())
     for i in range(0, len(values)):
         # todo: symbol check here
-        ticker = values[i]
-        test_ticker(exchange, skipped_properties, method, ticker, checked_symbol)
+        test_last_price(exchange, skipped_properties, method, values[i], checked_symbol)
