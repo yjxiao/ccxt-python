@@ -8,7 +8,7 @@ from ccxt.abstract.binance import ImplicitAPI
 import asyncio
 import hashlib
 import json
-from ccxt.base.types import Balances, Currency, Greeks, Int, Leverage, Leverages, MarginMode, MarginModes, Market, MarketInterface, Num, Option, Order, OrderBook, OrderRequest, OrderSide, OrderType, Str, Strings, Ticker, Tickers, Trade, Transaction, TransferEntry
+from ccxt.base.types import Balances, Currency, Greeks, Int, Leverage, Leverages, MarginMode, MarginModes, MarginModification, Market, MarketInterface, Num, Option, Order, OrderBook, OrderRequest, OrderSide, OrderType, Str, Strings, Ticker, Tickers, Trade, Transaction, TransferEntry
 from typing import List
 from ccxt.base.errors import ExchangeError
 from ccxt.base.errors import PermissionDenied
@@ -145,7 +145,7 @@ class binance(Exchange, ImplicitAPI):
                 'fetchPositionMode': True,
                 'fetchPositions': True,
                 'fetchPositionsRisk': True,
-                'fetchPremiumIndexOHLCV': False,
+                'fetchPremiumIndexOHLCV': True,
                 'fetchSettlementHistory': True,
                 'fetchStatus': True,
                 'fetchTicker': True,
@@ -792,6 +792,7 @@ class binance(Exchange, ImplicitAPI):
                         'continuousKlines': {'cost': 1, 'byLimit': [[99, 1], [499, 2], [1000, 5], [10000, 10]]},
                         'markPriceKlines': {'cost': 1, 'byLimit': [[99, 1], [499, 2], [1000, 5], [10000, 10]]},
                         'indexPriceKlines': {'cost': 1, 'byLimit': [[99, 1], [499, 2], [1000, 5], [10000, 10]]},
+                        'premiumIndexKlines': {'cost': 1, 'byLimit': [[99, 1], [499, 2], [1000, 5], [10000, 10]]},
                         'fundingRate': 1,
                         'fundingInfo': 1,
                         'premiumIndex': 1,
@@ -4140,6 +4141,11 @@ class binance(Exchange, ImplicitAPI):
                 response = await self.dapiPublicGetIndexPriceKlines(self.extend(request, params))
             else:
                 response = await self.fapiPublicGetIndexPriceKlines(self.extend(request, params))
+        elif price == 'premiumIndex':
+            if market['inverse']:
+                response = await self.dapiPublicGetPremiumIndexKlines(self.extend(request, params))
+            else:
+                response = await self.fapiPublicGetPremiumIndexKlines(self.extend(request, params))
         elif market['linear']:
             response = await self.fapiPublicGetKlines(self.extend(request, params))
         elif market['inverse']:
@@ -10313,7 +10319,17 @@ class binance(Exchange, ImplicitAPI):
             'code': code,
         })
 
-    def parse_margin_modification(self, data, market: Market = None):
+    def parse_margin_modification(self, data, market: Market = None) -> MarginModification:
+        #
+        # add/reduce margin
+        #
+        #     {
+        #         "code": 200,
+        #         "msg": "Successfully modify position margin.",
+        #         "amount": 0.001,
+        #         "type": 1
+        #     }
+        #
         rawType = self.safe_integer(data, 'type')
         resultType = 'add' if (rawType == 1) else 'reduce'
         resultAmount = self.safe_number(data, 'amount')
@@ -10321,14 +10337,17 @@ class binance(Exchange, ImplicitAPI):
         status = 'ok' if (errorCode == '200') else 'failed'
         return {
             'info': data,
+            'symbol': market['symbol'],
             'type': resultType,
             'amount': resultAmount,
+            'total': None,
             'code': None,
-            'symbol': market['symbol'],
             'status': status,
+            'timestamp': None,
+            'datetime': None,
         }
 
-    async def reduce_margin(self, symbol: str, amount, params={}):
+    async def reduce_margin(self, symbol: str, amount, params={}) -> MarginModification:
         """
         :see: https://binance-docs.github.io/apidocs/delivery/en/#modify-isolated-position-margin-trade
         :see: https://binance-docs.github.io/apidocs/futures/en/#modify-isolated-position-margin-trade
@@ -10340,7 +10359,7 @@ class binance(Exchange, ImplicitAPI):
         """
         return await self.modify_margin_helper(symbol, amount, 2, params)
 
-    async def add_margin(self, symbol: str, amount, params={}):
+    async def add_margin(self, symbol: str, amount, params={}) -> MarginModification:
         """
         :see: https://binance-docs.github.io/apidocs/delivery/en/#modify-isolated-position-margin-trade
         :see: https://binance-docs.github.io/apidocs/futures/en/#modify-isolated-position-margin-trade
